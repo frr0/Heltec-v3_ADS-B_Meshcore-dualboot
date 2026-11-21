@@ -2,6 +2,7 @@
  * stands alone. A torn last write cannot prevent the next boot reading all
  * the earlier packets. The same JSON is available over the USB console. */
 #include "storage.h"
+#include "ble.h"
 #include "cJSON.h"
 #include "esp_partition.h"
 #include "esp_spiffs.h"
@@ -172,4 +173,20 @@ void storage_dump(void) {
         read_lines(packets,false);
     }
     puts("SXEND");
+}
+
+void storage_dump_ble(void) {
+    FILE *f=fopen(packets,"r");
+    if (!f) f=fopen(ROOT"/packets","r");
+    if (f) {
+        char line[1024];
+        while (fgets(line,sizeof(line),f)) {
+            if (line[0]!='{') continue;
+            char out[1080];
+            snprintf(out,sizeof(out),"SXLOG %s",line);
+            ble_send_line(out);
+        }
+        fclose(f);
+    }
+    ble_send_line("SXEND");
 }

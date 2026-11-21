@@ -8,5 +8,6 @@ EraseResult storage_clear_packets(void);
 void storage_restore(void);
 bool storage_save(const char *line, bool packet);
 void storage_dump(void);
+void storage_dump_ble(void);
 bool storage_import(const char *json);
 #endif

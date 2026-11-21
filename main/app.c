@@ -9,6 +9,7 @@
 #include "display.h"
 #include "storage.h"
 #include "tuning.h"
+#include "ble.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
@@ -265,6 +266,16 @@ static void button(void) {
     handle_key(button_update(&b,!gpio_get_level(BOOT_BUTTON),now_ms()));
 }
 
+static void on_ble_cmd(const char *cmd) {
+    if (!strcmp(cmd, "dump")) {
+        if (mounted) storage_dump_ble();
+    } else if (!strcmp(cmd, "tap")) {
+        handle_key(KEY_TAP);
+    } else if (!strcmp(cmd, "hold")) {
+        handle_key(KEY_HOLD);
+    }
+}
+
 /* USB stays useful in the field without a Python REPL. Commands are lines.
  * An imported card retains its old boot and time, so it appears as saved. */
 static void console(bool screen_ok) {
@@ -335,6 +346,11 @@ static void field_task(void *unused) {
             char line[1280];
             observation(line,sizeof(line),&r,boot_id,now,test_count,atomic_load(&deferred));
             printf("%s %"PRId64" %s\n",r.evidence_index?"SXSUPPORT":"SXOBS",now,line);
+            if (ble_is_connected()) {
+                char obs[1320];
+                snprintf(obs, sizeof(obs), "SXOBS %"PRId64" %s\n", now, line);
+                ble_send_line(obs);
+            }
             if (r.length==7 && !r.evidence_index) {
                 printf("SXDF11 %08"PRIx32" %"PRId64" ",boot_id,r.capture.last_ms);
                 for (int i=0; i<7; i++) printf("%02x",r.word[i]);
@@ -375,6 +391,12 @@ static void field_task(void *unused) {
                 if (!log_ok) strcpy(notice,"Log unavailable");
                 screen_ok=display_draw(s,card,card==NO_CARD && have_trace && !s[6][0]?trace:NULL,NULL)==ESP_OK;
             }
+            if (ble_is_connected()) {
+                char scr[512];
+                snprintf(scr,sizeof(scr),"SXSCREEN %s|%s|%s|%s|%s|%s|%s|%s\n",
+                         s[0],s[1],s[2],s[3],s[4],s[5],s[6],s[7]);
+                ble_send_line(scr);
+            }
             last_draw=now;
         }
         if (now-last_clock>=60000) {
@@ -389,6 +411,8 @@ static void field_task(void *unused) {
 void app_main(void) {
     boot_id=esp_random();
     load_dial();
+    ESP_ERROR_CHECK(ble_service_init());
+    ble_set_rx_handler(on_ble_cmd);
     /* The decoder's trellis workspace needs one large internal block. Take
      * it before the queues split the heap. */
     bool decoder_ok=decoder_init(report);

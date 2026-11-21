@@ -3,9 +3,18 @@
  * library. Send a new screen only when something on it actually changed. */
 #include "display.h"
 #include "font8x8.h"
+#include "driver/gpio.h"
 #include "driver/i2c.h"
+#include "esp_rom_sys.h"
 #include <stdio.h>
 #include <string.h>
+
+enum {
+    I2C_SDA_PIN = 17,
+    I2C_SCL_PIN = 18,
+    OLED_RST_PIN = 21,
+    VEXT_CTRL_PIN = 36
+};
 
 static const i2c_port_t bus = I2C_NUM_0;
 static uint8_t image[1+128*8], previous[128*8];
@@ -16,9 +25,25 @@ static esp_err_t send(const uint8_t *bytes, size_t count) {
 }
 
 esp_err_t display_init(void) {
-    i2c_config_t cfg = {.mode=I2C_MODE_MASTER,.sda_io_num=18,.scl_io_num=17,
+    /* Power on external peripherals rail (active LOW on Heltec V3). */
+    gpio_config_t vext = {.pin_bit_mask=1ULL<<VEXT_CTRL_PIN, .mode=GPIO_MODE_OUTPUT};
+    esp_err_t err = gpio_config(&vext);
+    if (err != ESP_OK) return err;
+    gpio_set_level(VEXT_CTRL_PIN, 0);
+    esp_rom_delay_us(50000);
+
+    /* Reset SSD1306 display controller. */
+    gpio_config_t rst = {.pin_bit_mask=1ULL<<OLED_RST_PIN, .mode=GPIO_MODE_OUTPUT};
+    err = gpio_config(&rst);
+    if (err != ESP_OK) return err;
+    gpio_set_level(OLED_RST_PIN, 0);
+    esp_rom_delay_us(10000);
+    gpio_set_level(OLED_RST_PIN, 1);
+    esp_rom_delay_us(10000);
+
+    i2c_config_t cfg = {.mode=I2C_MODE_MASTER,.sda_io_num=I2C_SDA_PIN,.scl_io_num=I2C_SCL_PIN,
         .sda_pullup_en=true,.scl_pullup_en=true,.master.clk_speed=400000};
-    esp_err_t err = i2c_param_config(bus,&cfg);
+    err = i2c_param_config(bus,&cfg);
     if (err==ESP_OK) err = i2c_driver_install(bus,cfg.mode,0,0,0);
     if (err!=ESP_OK) return err;
     const uint8_t init[] = {0,0xae,0x20,0,0x40,0xa1,0xc8,0xa8,63,0xd3,0,

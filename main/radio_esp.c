@@ -1,4 +1,4 @@
-/* ESP32-S3 wiring and SPI transport for the T3-S3. */
+/* ESP32-S3 wiring and SPI transport for Heltec WiFi LoRa 32 V3. */
 #include "radio_bus.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -6,7 +6,7 @@
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 
-enum { CS=7, CLK=5, MISO=3, MOSI=6, RESET=8, BUSY=34 };
+enum { CS=8, CLK=9, MISO=11, MOSI=10, RESET=12, BUSY=13 };
 static spi_device_handle_t spi;
 #define TRY(call) ESP_RETURN_ON_ERROR((call),"radio",#call)
 
@@ -36,4 +36,4 @@ int radio_exchange(const uint8_t *tx, uint8_t *rx, size_t bytes) {
 void radio_reset_pin(bool high) { gpio_set_level(RESET,high); }
 void radio_delay_us(unsigned us) { esp_rom_delay_us(us); }
 uint32_t radio_clock_us(void) { return (uint32_t)esp_timer_get_time(); }
-unsigned radio_tcxo(void) { return 1; } /* DIO3, 1.7 V */
+unsigned radio_tcxo(void) { return 2; } /* DIO3, 1.8 V */

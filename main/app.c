@@ -202,6 +202,7 @@ static void decode_task(void *unused) {
 
 static const char *menu_message;
 static bool save_pending, mounted, have_trace, screen_ok;
+static atomic_bool ble_stream_obs;
 static unsigned test_count;
 static int64_t cleared_through_ms=-1;
 
@@ -269,17 +270,53 @@ static void button(void) {
 static void on_ble_cmd(const char *cmd) {
     if (!strcmp(cmd, "dump")) {
         if (mounted) storage_dump_ble();
+    } else if (!strcmp(cmd, "stream on") || !strcmp(cmd, "stream 1")) {
+        atomic_store(&ble_stream_obs, true);
+        ble_send_line("SXMSG Stream live ON\n");
+    } else if (!strcmp(cmd, "stream off") || !strcmp(cmd, "stream 0")) {
+        atomic_store(&ble_stream_obs, false);
+        ble_send_line("SXMSG Stream live OFF\n");
     } else if (!strcmp(cmd, "tap") || !strcmp(cmd, "key tap")) {
         handle_key(KEY_TAP);
     } else if (!strcmp(cmd, "hold") || !strcmp(cmd, "key hold")) {
         handle_key(KEY_HOLD);
     } else if (!strcmp(cmd, "double") || !strcmp(cmd, "key double")) {
         handle_key(KEY_DOUBLE);
+    } else if (!strcmp(cmd, "live")) {
+        if (menu.open) close_menu();
+        history_live();
+    } else if (!strcmp(cmd, "prev") || !strcmp(cmd, "older")) {
+        if (!menu.open) history_older();
+    } else if (!strcmp(cmd, "clear")) {
+        int64_t cutoff=now_ms();
+        EraseResult result=mounted ? storage_clear_packets() : ERASE_FAILED;
+        history_clear();
+        cleared_through_ms=cutoff;
+        test_count=0;
+        have_trace=false;
+        if (menu.open) menu_message=result==ERASE_DONE ? "History cleared" : "Erase incomplete";
+        ble_send_line(result==ERASE_DONE ? "SXMSG History cleared\n" : "SXMSG Erase failed\n");
+    } else if (!strncmp(cmd, "tune ", 5)) {
+        uint32_t hz = (uint32_t)strtoul(cmd + 5, NULL, 10);
+        if (hz >= MIN_HZ && hz <= MAX_HZ) {
+            atomic_store(&failed_hz, 0);
+            atomic_store(&requested_hz, hz);
+            if (menu.open) menu.hz = hz;
+        }
+    } else if (!strcmp(cmd, "save_dial")) {
+        uint32_t hz = atomic_load(&applied_hz);
+        if (save_dial(hz)) {
+            ble_send_line("SXMSG Freq saved\n");
+            if (menu.open) close_menu();
+        } else {
+            ble_send_line("SXMSG Save failed\n");
+        }
     } else if (!strcmp(cmd, "status")) {
         char stat[256];
-        snprintf(stat, sizeof(stat), "SXSTATUS ready=%u bursts=%u log=%u oled=%u dial=%u saved=%u menu=%u\n",
+        snprintf(stat, sizeof(stat), "SXSTATUS ready=%u bursts=%u log=%u oled=%u dial=%u saved=%u menu=%u stream=%u\n",
                  atomic_load(&ready), atomic_load(&bursts), mounted, screen_ok,
-                 atomic_load(&applied_hz), (unsigned)saved_hz, menu.open);
+                 atomic_load(&applied_hz), (unsigned)saved_hz, menu.open,
+                 atomic_load(&ble_stream_obs));
         ble_send_line(stat);
     }
 }
@@ -354,7 +391,7 @@ static void field_task(void *unused) {
             char line[1280];
             observation(line,sizeof(line),&r,boot_id,now,test_count,atomic_load(&deferred));
             printf("%s %"PRId64" %s\n",r.evidence_index?"SXSUPPORT":"SXOBS",now,line);
-            if (ble_is_connected()) {
+            if (ble_is_connected() && atomic_load(&ble_stream_obs)) {
                 char obs[1320];
                 snprintf(obs, sizeof(obs), "SXOBS %"PRId64" %s\n", now, line);
                 ble_send_line(obs);

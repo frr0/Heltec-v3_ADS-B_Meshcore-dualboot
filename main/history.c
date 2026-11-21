@@ -33,6 +33,8 @@ static unsigned back;
 static uint32_t current_boot;
 static bool dirty=true, restart_pages=true;
 static void remember_evicted(History *h, const Card *c);
+static uint32_t address(const Card *c);
+static unsigned aircraft_count(const History *h);
 
 void history_set_boot(uint32_t boot) { current_boot=boot; }
 
@@ -79,8 +81,46 @@ void history_add(Card c) {
     if (!browsing) dirty=true;
 }
 
+void history_prev_aircraft(void) {
+    if (!live.count) return;
+    if (!browsing) {
+        frozen = live;
+        browsing = true;
+        back = 0;
+    }
+    if (frozen.count <= 1) return;
+    unsigned current_idx = frozen.count - 1 - back;
+    uint32_t cur_addr = address(&frozen.cards[current_idx]);
+
+    int found_idx = -1;
+    for (int i = (int)current_idx - 1; i >= 0; i--) {
+        const Card *c = &frozen.cards[i];
+        if (c->word[0]>>3 != 2 && address(c) != cur_addr) {
+            found_idx = i;
+            break;
+        }
+    }
+    if (found_idx < 0) {
+        for (int i = (int)frozen.count - 1; i > (int)current_idx; i--) {
+            const Card *c = &frozen.cards[i];
+            if (c->word[0]>>3 != 2 && address(c) != cur_addr) {
+                found_idx = i;
+                break;
+            }
+        }
+    }
+    if (found_idx >= 0) {
+        back = frozen.count - 1 - (unsigned)found_idx;
+        dirty = restart_pages = true;
+    }
+}
+
 void history_older(void) {
     if (!live.count) return;
+    if (aircraft_count(&live) > 1) {
+        history_prev_aircraft();
+        return;
+    }
     if (browsing) back = (back+1)%frozen.count;
     else {
         frozen = live;

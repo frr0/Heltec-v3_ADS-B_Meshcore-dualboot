@@ -286,7 +286,7 @@ static void on_ble_cmd(const char *cmd) {
         if (menu.open) close_menu();
         history_live();
     } else if (!strcmp(cmd, "prev") || !strcmp(cmd, "older")) {
-        if (!menu.open) history_older();
+        if (!menu.open) history_prev_aircraft();
     } else if (!strcmp(cmd, "clear")) {
         int64_t cutoff=now_ms();
         EraseResult result=mounted ? storage_clear_packets() : ERASE_FAILED;

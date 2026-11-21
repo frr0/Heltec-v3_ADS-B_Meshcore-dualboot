@@ -16,6 +16,7 @@ void history_add(Card c);
 void history_clear(void);
 void history_set_boot(uint32_t boot);
 void history_older(void);
+void history_prev_aircraft(void);
 void history_live(void);
 CardView history_screen(Screen screen, uint32_t boot, int64_t now);
 bool card_valid(const Card *c);

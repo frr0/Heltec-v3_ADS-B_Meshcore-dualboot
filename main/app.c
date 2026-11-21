@@ -201,7 +201,7 @@ static void decode_task(void *unused) {
 }
 
 static const char *menu_message;
-static bool save_pending, mounted, have_trace;
+static bool save_pending, mounted, have_trace, screen_ok;
 static unsigned test_count;
 static int64_t cleared_through_ms=-1;
 
@@ -269,10 +269,18 @@ static void button(void) {
 static void on_ble_cmd(const char *cmd) {
     if (!strcmp(cmd, "dump")) {
         if (mounted) storage_dump_ble();
-    } else if (!strcmp(cmd, "tap")) {
+    } else if (!strcmp(cmd, "tap") || !strcmp(cmd, "key tap")) {
         handle_key(KEY_TAP);
-    } else if (!strcmp(cmd, "hold")) {
+    } else if (!strcmp(cmd, "hold") || !strcmp(cmd, "key hold")) {
         handle_key(KEY_HOLD);
+    } else if (!strcmp(cmd, "double") || !strcmp(cmd, "key double")) {
+        handle_key(KEY_DOUBLE);
+    } else if (!strcmp(cmd, "status")) {
+        char stat[256];
+        snprintf(stat, sizeof(stat), "SXSTATUS ready=%u bursts=%u log=%u oled=%u dial=%u saved=%u menu=%u\n",
+                 atomic_load(&ready), atomic_load(&bursts), mounted, screen_ok,
+                 atomic_load(&applied_hz), (unsigned)saved_hz, menu.open);
+        ble_send_line(stat);
     }
 }
 
@@ -323,7 +331,7 @@ static void field_task(void *unused) {
     fcntl(STDIN_FILENO,F_SETFL,O_NONBLOCK);
     mounted=storage_init()==ESP_OK;
     bool log_ok=mounted;
-    bool oled=display_init()==ESP_OK, screen_ok=oled;
+    bool oled=display_init()==ESP_OK; screen_ok=oled;
     history_set_boot(boot_id);
     if (mounted) storage_restore();
     gpio_config_t pin={.pin_bit_mask=1ULL<<BOOT_BUTTON,.mode=GPIO_MODE_INPUT,.pull_up_en=true};

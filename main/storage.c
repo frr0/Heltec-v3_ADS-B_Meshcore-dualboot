@@ -21,20 +21,12 @@ static const char *erase_marker=ROOT"/erase-packets";
 static bool erase_pending;
 
 static esp_err_t mount_log(void) {
-    esp_vfs_spiffs_conf_t conf={.base_path=ROOT,.partition_label="captures",.max_files=3};
-    esp_err_t err=esp_vfs_spiffs_register(&conf);
-    if (err==ESP_OK) return err;
-    /* Only format a blank partition. A failed mount of an existing log
-     * deserves an error on the screen, not the loss of a field outing. */
-    const esp_partition_t *part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
-        ESP_PARTITION_SUBTYPE_DATA_SPIFFS,"captures");
-    if (!part) return ESP_ERR_NOT_FOUND;
-    uint8_t page[256];
-    for (size_t off=0; off<part->size; off+=sizeof(page)) {
-        if (esp_partition_read(part,off,page,sizeof(page))!=ESP_OK) return err;
-        for (unsigned i=0; i<sizeof(page); i++) if (page[i]!=0xff) return err;
-    }
-    conf.format_if_mount_failed=true;
+    esp_vfs_spiffs_conf_t conf={
+        .base_path=ROOT,
+        .partition_label="captures",
+        .max_files=5,
+        .format_if_mount_failed=true
+    };
     return esp_vfs_spiffs_register(&conf);
 }
 

@@ -25,7 +25,7 @@
 #include <string.h>
 #include <unistd.h>
 
-enum { QUEUE_DEPTH=96, UNCHECKED=8, BOOT_BUTTON=0 };
+enum { QUEUE_DEPTH=64, UNCHECKED=8, BOOT_BUTTON=0 };
 /* Advances only when both the fresh queue and the deferred passes are idle. */
 static atomic_uint idle_polls;
 static QueueHandle_t captures, results;
@@ -465,9 +465,9 @@ void app_main(void) {
     results=xQueueCreate(16,sizeof(Result));
     ESP_ERROR_CHECK(captures && results && decoder_ok ? ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(decoder_self_test() ? ESP_OK : ESP_ERR_INVALID_RESPONSE);
-    ESP_ERROR_CHECK(xTaskCreatePinnedToCore(field_task,"field",12288,NULL,3,NULL,0)==pdPASS
+    ESP_ERROR_CHECK(xTaskCreatePinnedToCore(field_task,"field",8192,NULL,3,NULL,0)==pdPASS
                     ? ESP_OK : ESP_ERR_NO_MEM);
-    ESP_ERROR_CHECK(xTaskCreatePinnedToCore(decode_task,"decoder",24576,NULL,5,NULL,1)==pdPASS
+    ESP_ERROR_CHECK(xTaskCreatePinnedToCore(decode_task,"decoder",20480,NULL,5,NULL,1)==pdPASS
                     ? ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(xTaskCreatePinnedToCore(radio_task,"radio",8192,NULL,8,NULL,0)==pdPASS
                     ? ESP_OK : ESP_ERR_NO_MEM);

@@ -8,6 +8,7 @@
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
+#include "esp_mac.h"
 #include <string.h>
 
 #define DEVICE_NAME "Heltec-ADSB"
@@ -101,6 +102,8 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
     return 0;
 }
 
+static uint8_t own_addr_type = BLE_OWN_ADDR_RANDOM;
+
 static void start_advertising(void) {
     struct ble_gap_adv_params adv_params;
     struct ble_hs_adv_fields fields;
@@ -116,11 +119,25 @@ static void start_advertising(void) {
     memset(&adv_params, 0, sizeof(adv_params));
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER,
+    ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER,
                       &adv_params, gap_event_cb, NULL);
 }
 
 static void on_sync(void) {
+    // Assign a dedicated static random BLE MAC for ADS-B so Android OS
+    // never confuses it with MeshCore's bonded public MAC address.
+    uint8_t rnd_addr[6] = {0};
+    esp_read_mac(rnd_addr, ESP_MAC_BT);
+    uint8_t ble_rnd[6];
+    for (int i = 0; i < 6; i++) {
+        ble_rnd[i] = rnd_addr[5 - i];
+    }
+    ble_rnd[5] |= 0xC0; // Set two MSBs for valid BLE static random address
+    ble_rnd[0] ^= 0xA5; // Differentiate LSB
+
+    ble_hs_id_set_rnd(ble_rnd);
+    ble_hs_id_infer_auto(0, &own_addr_type);
+
     start_advertising();
 }
 

@@ -7,6 +7,7 @@
 #include "receiver.h"
 #include "radio.h"
 #include "display.h"
+#include "battery.h"
 #include "storage.h"
 #include "tuning.h"
 #include "ble.h"
@@ -25,7 +26,14 @@
 #include <string.h>
 #include <unistd.h>
 
-enum { QUEUE_DEPTH=64, UNCHECKED=8, BOOT_BUTTON=0 };
+enum {
+    QUEUE_DEPTH = 64,
+    UNCHECKED = 8,
+    BOOT_BUTTON = 0,
+    SCREEN_TIMEOUT_MS = 5 * 60 * 1000,
+    BAT_SAMPLE_MS = 10000,
+    BLE_STATUS_PERIOD_MS = 30000
+};
 /* Advances only when both the fresh queue and the deferred passes are idle. */
 static atomic_uint idle_polls;
 static QueueHandle_t captures, results;
@@ -201,10 +209,38 @@ static void decode_task(void *unused) {
 }
 
 static const char *menu_message;
-static bool save_pending, mounted, have_trace, screen_ok;
+static bool save_pending, mounted, have_trace, screen_ok, screen_on = true;
 static atomic_bool ble_stream_obs;
 static unsigned test_count;
 static int64_t cleared_through_ms=-1;
+static int64_t last_button_ms;
+static int bat_mv = -1, bat_pct = -1;
+
+static void inject_battery_header(char row[COLUMNS+1], int pct) {
+    if (pct < 0) return;
+    char bat[8];
+    int blen = snprintf(bat, sizeof(bat), "%d%%", pct);
+    if (blen <= 0) return;
+
+    int best_start = -1, best_len = 0;
+    int run_start = -1, run_len = 0;
+    for (int i = 0; i < COLUMNS && row[i]; i++) {
+        if (row[i] == ' ') {
+            if (run_start < 0) run_start = i;
+            run_len++;
+            if (run_len > best_len) {
+                best_len = run_len;
+                best_start = run_start;
+            }
+        } else {
+            run_start = -1;
+            run_len = 0;
+        }
+    }
+    if (best_start >= 0 && best_len >= blen + 2) {
+        memcpy(row + best_start + 1, bat, (size_t)blen);
+    }
+}
 
 static void close_menu(void) {
     menu.open=false;
@@ -262,9 +298,26 @@ static void handle_key(Key key) {
     }
 }
 
-static void button(void) {
+static void button(bool oled, bool *redraw) {
     static Button b;
-    handle_key(button_update(&b,!gpio_get_level(BOOT_BUTTON),now_ms()));
+    static bool wake_consume;
+    bool pressed = !gpio_get_level(BOOT_BUTTON);
+    int64_t now = now_ms();
+    if (pressed) {
+        last_button_ms = now;
+        if (!screen_on) {
+            screen_on = true;
+            wake_consume = true;
+            if (oled) display_set_power(true);
+            *redraw = true;
+            return;
+        }
+    }
+    if (wake_consume) {
+        if (!pressed) wake_consume = false;
+        return;
+    }
+    handle_key(button_update(&b, pressed, now));
 }
 
 static atomic_bool req_ble_dump = false;
@@ -338,13 +391,13 @@ static void console(bool screen_ok) {
             }
             else if (!strcmp(line,"status"))
                 printf("SXSTATUS %08"PRIx32" ready=%u bursts=%u polls=%u queue_peak=%u queue_full=%u filtered=%u idle_polls=%u "
-                       "rearm_max_us=%u retries=%u deferred_drops=%u log=%u oled=%u dial=%u saved=%u menu=%u scope_cols=%u scope_samples=%u rssi_code=%d peak_code=%d scope_hits=%u wave_block=%u zoom=%u decoder_ram=%s\n",boot_id,atomic_load(&ready),
+                       "rearm_max_us=%u retries=%u deferred_drops=%u log=%u oled=%u dial=%u saved=%u menu=%u scope_cols=%u scope_samples=%u rssi_code=%d peak_code=%d scope_hits=%u wave_block=%u zoom=%u decoder_ram=%s bat=%d vbat=%d\n",boot_id,atomic_load(&ready),
                        atomic_load(&bursts),atomic_load(&polls),atomic_load(&high_water),atomic_load(&full_queue),atomic_load(&filtered),atomic_load(&idle_polls),
                        atomic_load(&max_rearm_us),atomic_load(&restarts),atomic_load(&deferred),mounted,screen_ok,atomic_load(&applied_hz),
                        (unsigned)saved_hz,menu.open,menu.open?view.columns:0,menu.open?view.samples:0,
                        menu.open?view.level:-1,menu.open?view.strongest:-1,menu.open?view.triggers:0,
                        menu.open?(unsigned)view.block:0,menu.open && view.zoom,
-                       decoder_workspace_internal()?"internal":"psram");
+                       decoder_workspace_internal()?"internal":"psram",bat_pct,bat_mv);
             else if (!strncmp(line,"import ",7) && mounted) {
                 bool ok=storage_import(line+7);
                 puts(ok?"SXIMPORT OK":"SXIMPORT ERROR");
@@ -358,12 +411,18 @@ static void field_task(void *unused) {
     fcntl(STDIN_FILENO,F_SETFL,O_NONBLOCK);
     mounted=storage_init()==ESP_OK;
     bool log_ok=mounted;
-    bool oled=display_init()==ESP_OK; screen_ok=oled;
+    bool oled=display_init()==ESP_OK; screen_ok=oled; screen_on=oled;
+    if (battery_init()==ESP_OK) {
+        bat_mv=battery_read_mv();
+        bat_pct=battery_percent(bat_mv);
+    }
     history_set_boot(boot_id);
     if (mounted) storage_restore();
     gpio_config_t pin={.pin_bit_mask=1ULL<<BOOT_BUTTON,.mode=GPIO_MODE_INPUT,.pull_up_en=true};
     ESP_ERROR_CHECK(gpio_config(&pin));
-    int64_t last_save=-30000, last_draw=-1000, last_clock=now_ms();
+    int64_t start_ms=now_ms();
+    last_button_ms=start_ms;
+    int64_t last_save=-30000, last_draw=-1000, last_clock=start_ms, last_bat=start_ms, last_ble_status=start_ms;
     uint8_t trace[SAMPLES];
     while (true) {
         Result r;
@@ -398,16 +457,35 @@ static void field_task(void *unused) {
                 last_save=now;
             }
         }
-        button();
+        button(oled, &redraw);
         console(screen_ok);
         finish_save();
+        int64_t now=now_ms();
+        if (now-last_bat>=BAT_SAMPLE_MS) {
+            bat_mv=battery_read_mv();
+            int new_pct=battery_percent(bat_mv);
+            if (new_pct!=bat_pct) {
+                bat_pct=new_pct;
+                redraw=true;
+                if (ble_is_connected()) atomic_store(&req_ble_status, true);
+            }
+            last_bat=now;
+        }
+        if (oled && screen_on && now-last_button_ms>=SCREEN_TIMEOUT_MS) {
+            screen_on=false;
+            display_set_power(false);
+        }
+        if (ble_is_connected() && now-last_ble_status>=BLE_STATUS_PERIOD_MS) {
+            atomic_store(&req_ble_status, true);
+        }
         if (atomic_exchange(&req_ble_status, false)) {
             char stat[256];
-            snprintf(stat, sizeof(stat), "SXSTATUS ready=%u bursts=%u log=%u oled=%u dial=%u saved=%u menu=%u stream=%u\n",
-                     atomic_load(&ready), atomic_load(&bursts), mounted, screen_ok,
+            snprintf(stat, sizeof(stat), "SXSTATUS ready=%u bursts=%u log=%u oled=%u dial=%u saved=%u menu=%u stream=%u bat=%d vbat=%d\n",
+                     atomic_load(&ready), atomic_load(&bursts), mounted, screen_ok && screen_on,
                      atomic_load(&applied_hz), (unsigned)saved_hz, menu.open,
-                     atomic_load(&ble_stream_obs));
+                     atomic_load(&ble_stream_obs), bat_pct, bat_mv);
             ble_send_line(stat);
+            last_ble_status=now;
         }
         if (atomic_exchange(&req_ble_sync, false)) {
             history_sync_ble(boot_id, now_ms());
@@ -426,8 +504,8 @@ static void field_task(void *unused) {
             if (menu.open) menu_message = result == ERASE_DONE ? "History cleared" : "Erase incomplete";
             ble_send_line(result == ERASE_DONE ? "SXMSG History cleared\n" : "SXMSG Erase failed\n");
         }
-        int64_t now=now_ms();
-        if (oled && (redraw || now-last_draw>=100)) {
+        now=now_ms();
+        if (((oled && screen_on) || ble_is_connected()) && (redraw || now-last_draw>=100)) {
             Screen s;
             if (menu.open) {
                 Scope snapshot;
@@ -443,13 +521,18 @@ static void field_task(void *unused) {
                 const char *message=menu_message;
                 if (menu.hz!=atomic_load(&applied_hz)) message="Tuning...";
                 menu_screen(&menu,&view,message,false,s);
-                screen_ok=display_draw(s,NO_CARD,NULL,&view)==ESP_OK;
+                if (oled && screen_on) {
+                    screen_ok=display_draw(s,NO_CARD,NULL,&view)==ESP_OK;
+                }
             } else {
                 CardView card=history_screen(s,boot_id,now);
+                inject_battery_header(s[0], bat_pct);
                 char *notice=s[card==POSITION_CARD ? 7 : 6];
                 if (!atomic_load(&ready)) strcpy(notice,atomic_load(&restarts)?"Radio retry":"Starting radio");
                 if (!log_ok) strcpy(notice,"Log unavailable");
-                screen_ok=display_draw(s,card,card==NO_CARD && have_trace && !s[6][0]?trace:NULL,NULL)==ESP_OK;
+                if (oled && screen_on) {
+                    screen_ok=display_draw(s,card,card==NO_CARD && have_trace && !s[6][0]?trace:NULL,NULL)==ESP_OK;
+                }
             }
             if (ble_is_connected()) {
                 char scr[512];

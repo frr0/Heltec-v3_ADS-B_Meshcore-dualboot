@@ -51,6 +51,17 @@ esp_err_t display_init(void) {
     return send(init,sizeof(init));
 }
 
+esp_err_t display_set_power(bool on) {
+    if (on) {
+        const uint8_t wake[] = {0, 0x8d, 0x14, 0xaf};
+        painted = false;
+        return send(wake, sizeof(wake));
+    } else {
+        const uint8_t sleep[] = {0, 0xae, 0x8d, 0x10};
+        return send(sleep, sizeof(sleep));
+    }
+}
+
 static void draw_trace(const uint8_t *raw) {
     int lo=255, hi=0;
     for (int i=0; i<SAMPLES; i++) {

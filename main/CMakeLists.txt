@@ -1,6 +1,6 @@
 if(NOT CMAKE_SCRIPT_MODE_FILE)
     include(../models/assets.cmake)
 endif()
-idf_component_register(SRCS app.c ble.c radio.c radio_esp.c sampler.c decoder.c display.c history.c cpr.c storage.c observation.c tuning.c "${assets}"
+idf_component_register(SRCS app.c battery.c ble.c radio.c radio_esp.c sampler.c decoder.c display.c history.c cpr.c storage.c observation.c tuning.c "${assets}"
     INCLUDE_DIRS "."
-    PRIV_REQUIRES driver esp_timer spiffs json nvs_flash bt)
+    PRIV_REQUIRES driver esp_adc esp_timer spiffs json nvs_flash bt)

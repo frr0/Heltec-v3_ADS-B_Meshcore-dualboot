@@ -168,17 +168,17 @@ void storage_dump(void) {
 }
 
 void storage_dump_ble(void) {
+    static char line[1024];
+    static char out[1080];
     FILE *f=fopen(packets,"r");
     if (!f) f=fopen(ROOT"/packets","r");
     if (f) {
-        char line[1024];
-        while (fgets(line,sizeof(line),f)) {
+        while (ble_is_connected() && fgets(line,sizeof(line),f)) {
             if (line[0]!='{') continue;
-            char out[1080];
             snprintf(out,sizeof(out),"SXLOG %s",line);
             ble_send_line(out);
         }
         fclose(f);
     }
-    ble_send_line("SXEND");
+    ble_send_line("SXEND\n");
 }

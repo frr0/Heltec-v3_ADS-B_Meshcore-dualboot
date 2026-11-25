@@ -267,15 +267,20 @@ static void button(void) {
     handle_key(button_update(&b,!gpio_get_level(BOOT_BUTTON),now_ms()));
 }
 
+static atomic_bool req_ble_dump = false;
+static atomic_bool req_ble_sync = false;
+static atomic_bool req_ble_status = false;
+static atomic_bool req_ble_clear = false;
+
 static void on_ble_cmd(const char *cmd) {
     if (!strcmp(cmd, "dump")) {
-        if (mounted) storage_dump_ble();
+        atomic_store(&req_ble_dump, true);
+    } else if (!strcmp(cmd, "sync") || !strcmp(cmd, "flights")) {
+        atomic_store(&req_ble_sync, true);
     } else if (!strcmp(cmd, "stream on") || !strcmp(cmd, "stream 1")) {
         atomic_store(&ble_stream_obs, true);
-        ble_send_line("SXMSG Stream live ON\n");
     } else if (!strcmp(cmd, "stream off") || !strcmp(cmd, "stream 0")) {
         atomic_store(&ble_stream_obs, false);
-        ble_send_line("SXMSG Stream live OFF\n");
     } else if (!strcmp(cmd, "tap") || !strcmp(cmd, "key tap")) {
         handle_key(KEY_TAP);
     } else if (!strcmp(cmd, "hold") || !strcmp(cmd, "key hold")) {
@@ -288,14 +293,7 @@ static void on_ble_cmd(const char *cmd) {
     } else if (!strcmp(cmd, "prev") || !strcmp(cmd, "older")) {
         if (!menu.open) history_prev_aircraft();
     } else if (!strcmp(cmd, "clear")) {
-        int64_t cutoff=now_ms();
-        EraseResult result=mounted ? storage_clear_packets() : ERASE_FAILED;
-        history_clear();
-        cleared_through_ms=cutoff;
-        test_count=0;
-        have_trace=false;
-        if (menu.open) menu_message=result==ERASE_DONE ? "History cleared" : "Erase incomplete";
-        ble_send_line(result==ERASE_DONE ? "SXMSG History cleared\n" : "SXMSG Erase failed\n");
+        atomic_store(&req_ble_clear, true);
     } else if (!strncmp(cmd, "tune ", 5)) {
         uint32_t hz = (uint32_t)strtoul(cmd + 5, NULL, 10);
         if (hz >= MIN_HZ && hz <= MAX_HZ) {
@@ -306,18 +304,10 @@ static void on_ble_cmd(const char *cmd) {
     } else if (!strcmp(cmd, "save_dial")) {
         uint32_t hz = atomic_load(&applied_hz);
         if (save_dial(hz)) {
-            ble_send_line("SXMSG Freq saved\n");
             if (menu.open) close_menu();
-        } else {
-            ble_send_line("SXMSG Save failed\n");
         }
     } else if (!strcmp(cmd, "status")) {
-        char stat[256];
-        snprintf(stat, sizeof(stat), "SXSTATUS ready=%u bursts=%u log=%u oled=%u dial=%u saved=%u menu=%u stream=%u\n",
-                 atomic_load(&ready), atomic_load(&bursts), mounted, screen_ok,
-                 atomic_load(&applied_hz), (unsigned)saved_hz, menu.open,
-                 atomic_load(&ble_stream_obs));
-        ble_send_line(stat);
+        atomic_store(&req_ble_status, true);
     }
 }
 
@@ -411,6 +401,31 @@ static void field_task(void *unused) {
         button();
         console(screen_ok);
         finish_save();
+        if (atomic_exchange(&req_ble_status, false)) {
+            char stat[256];
+            snprintf(stat, sizeof(stat), "SXSTATUS ready=%u bursts=%u log=%u oled=%u dial=%u saved=%u menu=%u stream=%u\n",
+                     atomic_load(&ready), atomic_load(&bursts), mounted, screen_ok,
+                     atomic_load(&applied_hz), (unsigned)saved_hz, menu.open,
+                     atomic_load(&ble_stream_obs));
+            ble_send_line(stat);
+        }
+        if (atomic_exchange(&req_ble_sync, false)) {
+            history_sync_ble(boot_id, now_ms());
+        }
+        if (atomic_exchange(&req_ble_dump, false)) {
+            if (mounted) storage_dump_ble();
+            else ble_send_line("SXEND\n");
+        }
+        if (atomic_exchange(&req_ble_clear, false)) {
+            int64_t cutoff = now_ms();
+            EraseResult result = mounted ? storage_clear_packets() : ERASE_FAILED;
+            history_clear();
+            cleared_through_ms = cutoff;
+            test_count = 0;
+            have_trace = false;
+            if (menu.open) menu_message = result == ERASE_DONE ? "History cleared" : "Erase incomplete";
+            ble_send_line(result == ERASE_DONE ? "SXMSG History cleared\n" : "SXMSG Erase failed\n");
+        }
         int64_t now=now_ms();
         if (oled && (redraw || now-last_draw>=100)) {
             Screen s;

@@ -3,8 +3,10 @@
  * appear on an older card, and a callsign can outlive a speed reading. */
 #include "history.h"
 #include "cpr.h"
+#include "ble.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct {
@@ -434,4 +436,74 @@ CardView history_screen(Screen s, uint32_t boot, int64_t now) {
         strcpy(s[4+i],d.line[start+i]);
     if (!*s[7]) status_line(s[7],browsing?"Hold live":"Tap older",right);
     return AIRCRAFT_CARD;
+}
+
+static int parse_int_in_str(const char *s) {
+    if (!s || !*s) return -1;
+    while (*s && (*s < '0' || *s > '9')) s++;
+    if (!*s) return -1;
+    return atoi(s);
+}
+
+static void send_flight_json_ble(const Flight *f, uint32_t boot, int64_t now) {
+    static char out[256];
+    int used = snprintf(out, sizeof(out), "SXFLIGHT {\"icao\":\"%06X\"", (unsigned)f->address);
+    if (*f->fields.name) {
+        used += snprintf(out + used, sizeof(out) - used, ",\"callsign\":\"%s\"", f->fields.name);
+    }
+    int alt = parse_int_in_str(f->fields.altitude);
+    if (alt >= 0 && strstr(f->fields.altitude, "ft")) {
+        used += snprintf(out + used, sizeof(out) - used, ",\"alt\":%d", alt);
+    }
+    int spd = parse_int_in_str(f->fields.speed);
+    if (spd >= 0 && strstr(f->fields.speed, "kt")) {
+        used += snprintf(out + used, sizeof(out) - used, ",\"spd\":%d", spd);
+    }
+    if (f->cpr.fixed) {
+        used += snprintf(out + used, sizeof(out) - used, ",\"lat\":%.5f,\"lon\":%.5f",
+                         f->cpr.lat, f->cpr.lon);
+    }
+    if (f->boot == boot && now >= f->seen) {
+        unsigned age_s = (unsigned)((now - f->seen) / 1000);
+        used += snprintf(out + used, sizeof(out) - used, ",\"age\":%u", age_s);
+    }
+    snprintf(out + used, sizeof(out) - used, "}\n");
+    ble_send_line(out);
+}
+
+void history_sync_ble(uint32_t boot, int64_t now) {
+    static uint32_t sent[CARDS * 2];
+    unsigned sent_count = 0;
+
+    // Send latest state of every unique aircraft in live.cards (newest first)
+    for (int i = (int)live.count - 1; i >= 0 && ble_is_connected(); i--) {
+        const Card *c = &live.cards[i];
+        if (c->word[0] >> 3 == 2) continue; // skip DF2 TEST cards
+        uint32_t addr = address(c);
+        bool already = false;
+        for (unsigned j = 0; j < sent_count; j++) {
+            if (sent[j] == addr) { already = true; break; }
+        }
+        if (already) continue;
+        if (sent_count < CARDS * 2) sent[sent_count++] = addr;
+
+        Flight f;
+        flight_at(&f, &live, (unsigned)i);
+        send_flight_json_ble(&f, boot, now);
+    }
+
+    // Also include any older aircraft evicted into live.prior
+    for (unsigned i = 0; i < live.prior_count && ble_is_connected(); i++) {
+        const Flight *pf = &live.prior[i];
+        if (!pf->address) continue;
+        bool already = false;
+        for (unsigned j = 0; j < sent_count; j++) {
+            if (sent[j] == pf->address) { already = true; break; }
+        }
+        if (already) continue;
+        if (sent_count < CARDS * 2) sent[sent_count++] = pf->address;
+        send_flight_json_ble(pf, boot, now);
+    }
+
+    ble_send_line("SXSYNCEND\n");
 }

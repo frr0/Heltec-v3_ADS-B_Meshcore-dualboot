@@ -96,6 +96,11 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
             notify_state = event->subscribe.cur_notify != 0;
         }
         break;
+    case BLE_GAP_EVENT_ADV_COMPLETE:
+        if (conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+            start_advertising();
+        }
+        break;
     default:
         break;
     }
@@ -167,23 +172,40 @@ bool ble_is_connected(void) {
     return conn_handle != BLE_HS_CONN_HANDLE_NONE && notify_state;
 }
 
+static void send_chunk_reliable(const char *data, size_t chunk) {
+    for (int attempt = 0; attempt < 6; attempt++) {
+        if (conn_handle == BLE_HS_CONN_HANDLE_NONE || !notify_state) return;
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(data, chunk);
+        if (!om) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        int rc = ble_gatts_notify_custom(conn_handle, nus_tx_handle, om);
+        if (rc == 0) {
+            vTaskDelay(pdMS_TO_TICKS(12));
+            return;
+        }
+        // Retry on transient NimBLE buffer exhaustion; stop on disconnect
+        if (rc != BLE_HS_ENOMEM && rc != BLE_HS_EBUSY) {
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
 void ble_send_line(const char *line) {
     if (conn_handle == BLE_HS_CONN_HANDLE_NONE || !notify_state) return;
     size_t len = strlen(line);
     size_t offset = 0;
     while (offset < len) {
+        if (conn_handle == BLE_HS_CONN_HANDLE_NONE || !notify_state) return;
         size_t chunk = len - offset;
         if (chunk > 20) chunk = 20;
-        struct os_mbuf *om = ble_hs_mbuf_from_flat(line + offset, chunk);
-        if (om) {
-            ble_gatts_notify_custom(conn_handle, nus_tx_handle, om);
-        }
+        send_chunk_reliable(line + offset, chunk);
         offset += chunk;
-        vTaskDelay(pdMS_TO_TICKS(10));
     }
     if (len == 0 || line[len-1] != '\n') {
-        struct os_mbuf *om = ble_hs_mbuf_from_flat("\n", 1);
-        if (om) ble_gatts_notify_custom(conn_handle, nus_tx_handle, om);
+        send_chunk_reliable("\n", 1);
     }
 }
 
